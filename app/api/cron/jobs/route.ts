@@ -186,6 +186,24 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // Also check for overdue scheduled broadcasts (broadcasts where status = 'scheduled' and scheduled_for <= now())
+  const { data: overdueBroadcasts } = await supabase
+    .from("broadcasts")
+    .select("id")
+    .eq("status", "scheduled")
+    .lte("scheduled_for", new Date().toISOString())
+    .limit(5);
+
+  if (overdueBroadcasts?.length) {
+    for (const b of overdueBroadcasts) {
+      try {
+        await executeScheduledBroadcast(supabase, b.id);
+      } catch (err) {
+        console.error(`Failed to execute overdue scheduled broadcast ${b.id}:`, err);
+      }
+    }
+  }
+
   return NextResponse.json({ processed, failed, total: jobs.length });
 }
 
@@ -626,9 +644,132 @@ async function processJob(
       break;
     }
 
+    case "trigger_scheduled_broadcast": {
+      const payload = job.payload as { broadcastId: string };
+      await executeScheduledBroadcast(supabase, payload.broadcastId);
+      break;
+    }
+
     default:
       console.warn(`Unknown job type: ${job.type}`);
   }
+}
+
+async function executeScheduledBroadcast(
+  supabase: Awaited<ReturnType<typeof createServiceClient>>,
+  broadcastId: string
+) {
+  const { data: broadcast, error } = await supabase
+    .from("broadcasts")
+    .select("*")
+    .eq("id", broadcastId)
+    .single();
+
+  if (error || !broadcast) return;
+  if (broadcast.status !== "scheduled") return;
+
+  const messageContent = broadcast.message_content as { text?: string } | null;
+  if (!messageContent?.text?.trim()) {
+    await supabase
+      .from("broadcasts")
+      .update({ status: "cancelled" })
+      .eq("id", broadcastId);
+    return;
+  }
+
+  // Atomically claim the broadcast to 'sending'
+  const { data: claimed } = await supabase
+    .from("broadcasts")
+    .update({ status: "sending" })
+    .eq("id", broadcastId)
+    .eq("status", "scheduled")
+    .select();
+
+  if (!claimed || claimed.length === 0) return;
+
+  const { resolveContacts } = await import(
+    "@/app/api/v1/broadcasts/[broadcastId]/send/route"
+  );
+  const filter = broadcast.segment_filter as any;
+  const contactIds = await resolveContacts(
+    supabase,
+    broadcast.workspace_id,
+    filter
+  );
+
+  if (contactIds.length === 0) {
+    await supabase
+      .from("broadcasts")
+      .update({ status: "completed", total_recipients: 0 })
+      .eq("id", broadcastId);
+    return;
+  }
+
+  const targetChannelId =
+    filter?.productTargeting?.channelId &&
+    filter.productTargeting.channelId !== "all_facebook"
+      ? filter.productTargeting.channelId
+      : null;
+
+  let ccQuery = supabase
+    .from("contact_channels")
+    .select("contact_id, channel_id")
+    .in("contact_id", contactIds);
+
+  if (targetChannelId) {
+    ccQuery = ccQuery.eq("channel_id", targetChannelId);
+  }
+
+  const { data: contactChannels } = await ccQuery;
+  if (!contactChannels?.length) {
+    await supabase
+      .from("broadcasts")
+      .update({ status: "cancelled" })
+      .eq("id", broadcastId);
+    return;
+  }
+
+  const seen = new Set<string>();
+  const recipientPairs: { contactId: string; channelId: string }[] = [];
+  for (const cc of contactChannels) {
+    if (!seen.has(cc.contact_id)) {
+      seen.add(cc.contact_id);
+      recipientPairs.push({
+        contactId: cc.contact_id,
+        channelId: cc.channel_id,
+      });
+    }
+  }
+
+  const recipientRows = recipientPairs.map((r) => ({
+    broadcast_id: broadcastId,
+    contact_id: r.contactId,
+    channel_id: r.channelId,
+    status: "pending",
+  }));
+
+  const recipientIds: string[] = [];
+  for (let i = 0; i < recipientRows.length; i += 500) {
+    const batch = recipientRows.slice(i, i + 500);
+    const { data: inserted } = await supabase
+      .from("broadcast_recipients")
+      .insert(batch)
+      .select("id");
+    if (inserted) {
+      recipientIds.push(...inserted.map((r) => r.id));
+    }
+  }
+
+  if (recipientIds.length === 0) {
+    await supabase
+      .from("broadcasts")
+      .update({ status: "completed", total_recipients: 0 })
+      .eq("id", broadcastId);
+    return;
+  }
+
+  const { scheduleBroadcastDelivery } = await import("@/lib/scheduler");
+  await scheduleBroadcastDelivery(supabase, broadcastId, recipientIds);
 }
 
 // Marks the broadcast completed once no recipient is left unfinished.

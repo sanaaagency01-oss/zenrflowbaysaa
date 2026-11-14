@@ -1,29 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { scheduleBroadcastDelivery } from "@/lib/scheduler";
+import {
+  resolveProductAudience,
+  type ProductTargeting,
+} from "@/lib/product-audience";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, Platform } from "@/lib/types/database";
 
-interface SegmentRule {
+export interface SegmentRule {
   field: string;
   operator: string;
   value: string;
 }
 
-interface SegmentGroup {
+export interface SegmentGroup {
   combinator: "and" | "or";
   rules: SegmentRule[];
 }
 
-interface SegmentFilter {
+export interface SegmentFilter {
   combinator: "and" | "or";
   groups: SegmentGroup[];
+  productTargeting?: ProductTargeting;
 }
 
 /**
  * POST /api/v1/broadcasts/:broadcastId/send
  *
- * Resolves the broadcast's segment filter into contacts,
+ * Resolves the broadcast's segment filter and product targeting into contacts,
  * creates broadcast_recipients, and schedules delivery jobs.
  */
 export async function POST(
@@ -77,7 +82,6 @@ export async function POST(
     const body = await request.json();
     if (body.messageContent) {
       messageContent = body.messageContent;
-      // Update the broadcast with the message content
       await supabase
         .from("broadcasts")
         .update({ message_content: messageContent as unknown as Json })
@@ -94,35 +98,57 @@ export async function POST(
     );
   }
 
-  // Resolve contacts from segment filter
+  // Service client for privileged jobs and recipients
+  const serviceClient = await createServiceClient();
+
+  // If this broadcast had a pending scheduled trigger job, remove it
+  await serviceClient
+    .from("scheduled_jobs")
+    .delete()
+    .eq("type", "trigger_scheduled_broadcast")
+    .contains("payload", { broadcastId });
+
+  // Resolve contacts from segment filter and product targeting
   const filter = broadcast.segment_filter as unknown as SegmentFilter | null;
   const contactIds = await resolveContacts(
-    supabase,
+    serviceClient,
     membership.workspace_id,
     filter
   );
 
   if (contactIds.length === 0) {
     return NextResponse.json(
-      { error: "No contacts match the segment filter" },
+      { error: "No contacts match the targeting criteria" },
       { status: 400 }
     );
   }
 
-  // For each contact, find their first active channel link (via contact_channels)
-  const { data: contactChannels } = await supabase
+  // If product targeting specified a channel, prioritize or filter to that channel
+  const targetChannelId =
+    filter?.productTargeting?.channelId &&
+    filter.productTargeting.channelId !== "all_facebook"
+      ? filter.productTargeting.channelId
+      : null;
+
+  let ccQuery = serviceClient
     .from("contact_channels")
     .select("contact_id, channel_id")
     .in("contact_id", contactIds);
 
+  if (targetChannelId) {
+    ccQuery = ccQuery.eq("channel_id", targetChannelId);
+  }
+
+  const { data: contactChannels } = await ccQuery;
+
   if (!contactChannels?.length) {
     return NextResponse.json(
-      { error: "No contacts have active channel connections" },
+      { error: "No matching contacts have active channel connections for this target" },
       { status: 400 }
     );
   }
 
-  // Deduplicate: one recipient per contact (first channel found)
+  // Deduplicate: one recipient per contact
   const seen = new Set<string>();
   const recipientPairs: { contactId: string; channelId: string }[] = [];
   for (const cc of contactChannels) {
@@ -147,7 +173,7 @@ export async function POST(
   const recipientIds: string[] = [];
   for (let i = 0; i < recipientRows.length; i += 500) {
     const batch = recipientRows.slice(i, i + 500);
-    const { data: inserted, error: insertErr } = await supabase
+    const { data: inserted, error: insertErr } = await serviceClient
       .from("broadcast_recipients")
       .insert(batch)
       .select("id");
@@ -173,8 +199,7 @@ export async function POST(
   }
 
   // Schedule delivery
-  // scheduled_jobs is service-role only; the broadcast's workspace was checked above.
-  await scheduleBroadcastDelivery(await createServiceClient(), broadcastId, recipientIds);
+  await scheduleBroadcastDelivery(serviceClient, broadcastId, recipientIds);
 
   return NextResponse.json({
     broadcastId,
@@ -184,16 +209,30 @@ export async function POST(
 }
 
 /**
- * Resolve segment filter into contact IDs.
- * If no filter, returns all subscribed contacts in the workspace.
+ * Resolve segment filter and product targeting into contact IDs.
+ * If no filter and no product targeting, returns all subscribed contacts in the workspace.
  */
-async function resolveContacts(
+export async function resolveContacts(
   supabase: SupabaseClient<Database>,
   workspaceId: string,
   filter: SegmentFilter | null
 ): Promise<string[]> {
-  // No filter = all subscribed contacts
-  if (!filter || !filter.groups?.length) {
+  // Check if product targeting is enabled
+  let productContactIds: Set<string> | null = null;
+  if (
+    filter?.productTargeting?.enabled &&
+    filter.productTargeting.productName?.trim()
+  ) {
+    const res = await resolveProductAudience(
+      supabase,
+      workspaceId,
+      filter.productTargeting
+    );
+    productContactIds = new Set(res.contactIds);
+  }
+
+  // No filter and no product targeting = all subscribed contacts
+  if (!filter?.groups?.length && !productContactIds) {
     const { data } = await supabase
       .from("contacts")
       .select("id")
@@ -213,16 +252,27 @@ async function resolveContacts(
 
   if (!allContacts?.length) return [];
 
-  const allIds = new Set(allContacts.map((c) => c.id));
+  let baseIds = new Set(allContacts.map((c) => c.id));
 
-  // Evaluate each group
+  // Intersect with product targeting if active
+  if (productContactIds !== null) {
+    baseIds = intersectSets([baseIds, productContactIds]);
+    if (baseIds.size === 0) return [];
+  }
+
+  // If no additional rule groups, return the product targeting matches
+  if (!filter?.groups?.length) {
+    return Array.from(baseIds);
+  }
+
+  // Evaluate each group against baseIds
   const groupResults: Set<string>[] = [];
 
   for (const group of filter.groups) {
     const ruleResults: Set<string>[] = [];
 
     for (const rule of group.rules) {
-      const ids = await evaluateRule(supabase, workspaceId, rule, allIds);
+      const ids = await evaluateRule(supabase, workspaceId, rule, baseIds);
       ruleResults.push(ids);
     }
 
@@ -254,17 +304,27 @@ async function evaluateRule(
   allContactIds: Set<string>
 ): Promise<Set<string>> {
   const contactIds = Array.from(allContactIds);
+  if (contactIds.length === 0) return new Set();
 
   switch (rule.field) {
     case "has_tag": {
-      // Find tag by name
-      const { data: tag } = await supabase
+      const isUuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          rule.value
+        );
+
+      let tagQuery = supabase
         .from("tags")
         .select("id")
-        .eq("workspace_id", workspaceId)
-        .eq("name", rule.value)
-        .single();
+        .eq("workspace_id", workspaceId);
 
+      if (isUuid) {
+        tagQuery = tagQuery.or(`id.eq.${rule.value},name.eq.${rule.value}`);
+      } else {
+        tagQuery = tagQuery.eq("name", rule.value);
+      }
+
+      const { data: tag } = await tagQuery.maybeSingle();
       if (!tag) return new Set();
 
       const { data: tagged } = await supabase
@@ -277,14 +337,24 @@ async function evaluateRule(
     }
 
     case "missing_tag": {
-      const { data: tag } = await supabase
+      const isUuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          rule.value
+        );
+
+      let tagQuery = supabase
         .from("tags")
         .select("id")
-        .eq("workspace_id", workspaceId)
-        .eq("name", rule.value)
-        .single();
+        .eq("workspace_id", workspaceId);
 
-      if (!tag) return new Set(contactIds); // Tag doesn't exist, all contacts "miss" it
+      if (isUuid) {
+        tagQuery = tagQuery.or(`id.eq.${rule.value},name.eq.${rule.value}`);
+      } else {
+        tagQuery = tagQuery.eq("name", rule.value);
+      }
+
+      const { data: tag } = await tagQuery.maybeSingle();
+      if (!tag) return new Set(contactIds);
 
       const { data: tagged } = await supabase
         .from("contact_tags")
@@ -296,6 +366,95 @@ async function evaluateRule(
       return new Set(contactIds.filter((id) => !taggedSet.has(id)));
     }
 
+    case "facebook_page": {
+      let chanQuery = supabase
+        .from("channels")
+        .select("id")
+        .eq("workspace_id", workspaceId)
+        .eq("platform", "facebook")
+        .eq("is_active", true);
+
+      if (rule.value && rule.value !== "all") {
+        chanQuery = chanQuery.eq("id", rule.value);
+      }
+
+      const { data: channels } = await chanQuery;
+      if (!channels?.length) {
+        return rule.operator === "not_equals"
+          ? new Set(contactIds)
+          : new Set();
+      }
+
+      const channelIds = channels.map((c) => c.id);
+      const { data: links } = await supabase
+        .from("contact_channels")
+        .select("contact_id")
+        .in("channel_id", channelIds)
+        .in("contact_id", contactIds);
+
+      const linkedSet = new Set((links ?? []).map((l) => l.contact_id));
+      if (rule.operator === "not_equals") {
+        return new Set(contactIds.filter((id) => !linkedSet.has(id)));
+      }
+      return linkedSet;
+    }
+
+    case "product_interest": {
+      const res = await resolveProductAudience(supabase, workspaceId, {
+        enabled: true,
+        productName: rule.value,
+        audienceType: "interested",
+      });
+      const idSet = new Set(res.contactIds);
+      return new Set(contactIds.filter((id) => idSet.has(id)));
+    }
+
+    case "product_purchased": {
+      const res = await resolveProductAudience(supabase, workspaceId, {
+        enabled: true,
+        productName: rule.value,
+        audienceType: "purchased",
+      });
+      const idSet = new Set(res.contactIds);
+      return new Set(contactIds.filter((id) => idSet.has(id)));
+    }
+
+    case "message_contains": {
+      const kw = rule.value.toLowerCase().trim();
+      if (!kw) return new Set(contactIds);
+
+      const { data: convs } = await supabase
+        .from("conversations")
+        .select("contact_id, last_message_preview")
+        .eq("workspace_id", workspaceId)
+        .in("contact_id", contactIds)
+        .ilike("last_message_preview", `%${kw}%`);
+
+      const matched = new Set((convs ?? []).map((c) => c.contact_id));
+
+      const { data: comments } = await supabase
+        .from("comment_logs")
+        .select("author_id, comment_text")
+        .eq("workspace_id", workspaceId)
+        .ilike("comment_text", `%${kw}%`);
+
+      if (comments?.length) {
+        const authorIds = comments
+          .map((c) => c.author_id)
+          .filter(Boolean) as string[];
+        if (authorIds.length > 0) {
+          const { data: links } = await supabase
+            .from("contact_channels")
+            .select("contact_id")
+            .in("platform_sender_id", authorIds)
+            .in("contact_id", contactIds);
+          for (const l of links ?? []) matched.add(l.contact_id);
+        }
+      }
+
+      return matched;
+    }
+
     case "platform": {
       const { data: channels } = await supabase
         .from("channels")
@@ -304,7 +463,9 @@ async function evaluateRule(
         .eq("platform", rule.value as Platform);
 
       if (!channels?.length) {
-        return rule.operator === "not_equals" ? new Set(contactIds) : new Set();
+        return rule.operator === "not_equals"
+          ? new Set(contactIds)
+          : new Set();
       }
 
       const channelIds = channels.map((c) => c.id);
@@ -322,9 +483,8 @@ async function evaluateRule(
     }
 
     case "is_subscribed": {
-      // Already filtered to subscribed, but handle explicit false
       if (rule.value === "false") {
-        return new Set(); // We only target subscribed contacts
+        return new Set();
       }
       return new Set(contactIds);
     }
@@ -348,9 +508,18 @@ async function evaluateRule(
     }
 
     case "custom_field": {
-      // rule.value format: "field_slug:actual_value"
-      const [slug, ...rest] = rule.value.split(":");
-      const fieldValue = rest.join(":");
+      let slug = "";
+      let fieldValue = "";
+
+      if (rule.value.includes("::")) {
+        const parts = rule.value.split("::");
+        slug = parts[0] || "";
+        fieldValue = parts.slice(1).join("::");
+      } else {
+        const parts = rule.value.split(":");
+        slug = parts[0] || "";
+        fieldValue = parts.slice(1).join(":");
+      }
 
       const { data: fieldDef } = await supabase
         .from("custom_field_definitions")

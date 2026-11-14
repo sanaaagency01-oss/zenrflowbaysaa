@@ -25,6 +25,78 @@ export async function scheduleJob(
 }
 
 /**
+ * Schedule a broadcast to be triggered at a future date and time.
+ * Replaces any existing pending trigger for this broadcast.
+ */
+export async function scheduleBroadcastRun(
+  supabase: SupabaseClient<Database>,
+  broadcastId: string,
+  scheduledFor: Date
+) {
+  if (scheduledFor.getTime() <= Date.now()) {
+    throw new Error("Scheduled time must be in the future");
+  }
+
+  // Cancel any existing pending trigger_scheduled_broadcast jobs for this broadcast
+  await supabase
+    .from("scheduled_jobs")
+    .delete()
+    .eq("type", "trigger_scheduled_broadcast")
+    .contains("payload", { broadcastId });
+
+  // Update broadcast row
+  const { data: updated, error: updateErr } = await supabase
+    .from("broadcasts")
+    .update({
+      status: "scheduled",
+      scheduled_for: scheduledFor.toISOString(),
+    })
+    .eq("id", broadcastId)
+    .select()
+    .single();
+
+  if (updateErr) throw updateErr;
+
+  // Insert scheduled job
+  await scheduleJob(
+    supabase,
+    "trigger_scheduled_broadcast",
+    { broadcastId },
+    scheduledFor
+  );
+
+  return updated;
+}
+
+/**
+ * Cancel a scheduled broadcast and revert to draft status.
+ */
+export async function cancelBroadcastSchedule(
+  supabase: SupabaseClient<Database>,
+  broadcastId: string
+) {
+  // Remove pending scheduled trigger jobs
+  await supabase
+    .from("scheduled_jobs")
+    .delete()
+    .eq("type", "trigger_scheduled_broadcast")
+    .contains("payload", { broadcastId });
+
+  const { data: updated, error } = await supabase
+    .from("broadcasts")
+    .update({
+      status: "draft",
+      scheduled_for: null,
+    })
+    .eq("id", broadcastId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return updated;
+}
+
+/**
  * Schedule broadcast delivery. Creates individual jobs for each recipient
  * with 100ms spacing to avoid rate limits.
  */

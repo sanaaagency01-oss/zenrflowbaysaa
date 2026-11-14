@@ -6,10 +6,12 @@ import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import type { Database } from "@/lib/types/database";
 import { PLATFORMS, PLATFORM_LABELS } from "@/lib/platforms";
+import type { ProductTargeting } from "@/lib/product-audience";
 
 type Tag = Database["public"]["Tables"]["tags"]["Row"];
 type CustomFieldDef =
   Database["public"]["Tables"]["custom_field_definitions"]["Row"];
+type Channel = Database["public"]["Tables"]["channels"]["Row"];
 
 // --- Filter types ---
 
@@ -27,6 +29,10 @@ export type FilterField =
   | "missing_tag"
   | "custom_field"
   | "platform"
+  | "facebook_page"
+  | "product_interest"
+  | "product_purchased"
+  | "message_contains"
   | "is_subscribed"
   | "last_interaction";
 
@@ -46,6 +52,7 @@ export interface FilterGroup {
 export interface SegmentFilter {
   combinator: "and" | "or";
   groups: FilterGroup[];
+  productTargeting?: ProductTargeting;
 }
 
 // --- Operator options per field ---
@@ -55,21 +62,57 @@ const fieldConfig: Record<
   {
     label: string;
     operators: { value: FilterOperator; label: string }[];
-    valueType: "tag" | "custom_field" | "platform" | "boolean" | "date" | "text";
+    valueType:
+      | "tag"
+      | "custom_field"
+      | "platform"
+      | "facebook_page"
+      | "boolean"
+      | "date"
+      | "text";
   }
 > = {
+  product_interest: {
+    label: "Бүтээгдэхүүн сонирхсон (Product Interest)",
+    operators: [
+      { value: "equals", label: "is" },
+      { value: "contains", label: "contains" },
+    ],
+    valueType: "text",
+  },
+  product_purchased: {
+    label: "Бүтээгдэхүүн худалдан авсан (Product Purchased)",
+    operators: [
+      { value: "equals", label: "is" },
+      { value: "contains", label: "contains" },
+    ],
+    valueType: "text",
+  },
+  facebook_page: {
+    label: "Facebook хуудас (Page)",
+    operators: [
+      { value: "equals", label: "is" },
+      { value: "not_equals", label: "is not" },
+    ],
+    valueType: "facebook_page",
+  },
+  message_contains: {
+    label: "Чат / Зурвас агуулсан (Message text)",
+    operators: [{ value: "contains", label: "contains" }],
+    valueType: "text",
+  },
   has_tag: {
-    label: "Has tag",
+    label: "Шошготой (Has tag)",
     operators: [{ value: "equals", label: "is" }],
     valueType: "tag",
   },
   missing_tag: {
-    label: "Missing tag",
+    label: "Шошгогүй (Missing tag)",
     operators: [{ value: "equals", label: "is" }],
     valueType: "tag",
   },
   custom_field: {
-    label: "Custom field",
+    label: "Талбар (Custom field)",
     operators: [
       { value: "equals", label: "equals" },
       { value: "not_equals", label: "does not equal" },
@@ -80,7 +123,7 @@ const fieldConfig: Record<
     valueType: "custom_field",
   },
   platform: {
-    label: "Platform",
+    label: "Платформ (Platform)",
     operators: [
       { value: "equals", label: "is" },
       { value: "not_equals", label: "is not" },
@@ -88,12 +131,12 @@ const fieldConfig: Record<
     valueType: "platform",
   },
   is_subscribed: {
-    label: "Subscribed",
+    label: "Бүртгэлтэй (Subscribed)",
     operators: [{ value: "equals", label: "is" }],
     valueType: "boolean",
   },
   last_interaction: {
-    label: "Last interaction",
+    label: "Сүүлд харьцсан (Last interaction)",
     operators: [
       { value: "before", label: "before" },
       { value: "after", label: "after" },
@@ -109,8 +152,8 @@ function generateId() {
 function createEmptyRule(): FilterRule {
   return {
     id: generateId(),
-    field: "has_tag",
-    operator: "equals",
+    field: "product_interest",
+    operator: "contains",
     value: "",
   };
 }
@@ -173,6 +216,7 @@ function FilterRuleRow({
   rule,
   tags,
   customFields,
+  facebookChannels,
   onChange,
   onRemove,
   canRemove,
@@ -180,11 +224,12 @@ function FilterRuleRow({
   rule: FilterRule;
   tags: Tag[];
   customFields: CustomFieldDef[];
+  facebookChannels: Channel[];
   onChange: (rule: FilterRule) => void;
   onRemove: () => void;
   canRemove: boolean;
 }) {
-  const config = fieldConfig[rule.field];
+  const config = fieldConfig[rule.field] || fieldConfig.product_interest;
   const operators = config.operators;
 
   function handleFieldChange(field: FilterField) {
@@ -206,10 +251,25 @@ function FilterRuleRow({
             onChange={(e) => onChange({ ...rule, value: e.target.value })}
             className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           >
-            <option value="">Select tag...</option>
+            <option value="">Шошго сонгох...</option>
             {tags.map((tag) => (
               <option key={tag.id} value={tag.id}>
                 {tag.name}
+              </option>
+            ))}
+          </select>
+        );
+      case "facebook_page":
+        return (
+          <select
+            value={rule.value}
+            onChange={(e) => onChange({ ...rule, value: e.target.value })}
+            className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="all">Бүх Facebook хуудас</option>
+            {facebookChannels.map((ch) => (
+              <option key={ch.id} value={ch.id}>
+                {ch.display_name || ch.username || "Facebook Page"}
               </option>
             ))}
           </select>
@@ -285,10 +345,14 @@ function FilterRuleRow({
         return (
           <input
             type="text"
-            placeholder="Value..."
+            placeholder={
+              rule.field === "product_interest" || rule.field === "product_purchased"
+                ? "Жишээ нь: deep shoot"
+                : "Утга оруулах..."
+            }
             value={rule.value}
             onChange={(e) => onChange({ ...rule, value: e.target.value })}
-            className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring min-w-[180px]"
           />
         );
     }
@@ -349,6 +413,7 @@ function FilterGroupCard({
   group,
   tags,
   customFields,
+  facebookChannels,
   onChange,
   onRemove,
   canRemove,
@@ -356,6 +421,7 @@ function FilterGroupCard({
   group: FilterGroup;
   tags: Tag[];
   customFields: CustomFieldDef[];
+  facebookChannels: Channel[];
   onChange: (group: FilterGroup) => void;
   onRemove: () => void;
   canRemove: boolean;
@@ -422,6 +488,7 @@ function FilterGroupCard({
               rule={rule}
               tags={tags}
               customFields={customFields}
+              facebookChannels={facebookChannels}
               onChange={(updated) => updateRule(rule.id, updated)}
               onRemove={() => removeRule(rule.id)}
               canRemove={group.rules.length > 1}
@@ -436,7 +503,7 @@ function FilterGroupCard({
         className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors"
       >
         <Plus className="h-3 w-3" />
-        Add filter
+        Нөхцөл нэмэх (Add filter)
       </button>
     </div>
   );
@@ -455,12 +522,13 @@ export function SegmentBuilder({
 }) {
   const [tags, setTags] = useState<Tag[]>([]);
   const [customFields, setCustomFields] = useState<CustomFieldDef[]>([]);
+  const [facebookChannels, setFacebookChannels] = useState<Channel[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function fetchData() {
       const supabase = createClient();
-      const [tagsRes, fieldsRes] = await Promise.all([
+      const [tagsRes, fieldsRes, channelsRes] = await Promise.all([
         supabase
           .from("tags")
           .select("*")
@@ -471,9 +539,16 @@ export function SegmentBuilder({
           .select("*")
           .eq("workspace_id", workspaceId)
           .order("name"),
+        supabase
+          .from("channels")
+          .select("*")
+          .eq("workspace_id", workspaceId)
+          .eq("platform", "facebook")
+          .eq("is_active", true),
       ]);
       setTags(tagsRes.data ?? []);
       setCustomFields(fieldsRes.data ?? []);
+      setFacebookChannels(channelsRes.data ?? []);
       setLoading(false);
     }
     fetchData();
@@ -538,6 +613,7 @@ export function SegmentBuilder({
             group={group}
             tags={tags}
             customFields={customFields}
+            facebookChannels={facebookChannels}
             onChange={(updated) => updateGroup(group.id, updated)}
             onRemove={() => removeGroup(group.id)}
             canRemove={value.groups.length > 1}
@@ -551,7 +627,7 @@ export function SegmentBuilder({
         className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-3 py-2 text-xs font-medium text-muted-foreground hover:border-primary hover:text-primary transition-colors"
       >
         <Plus className="h-3 w-3" />
-        Add filter group
+        Бүлэг нөхцөл нэмэх (Add filter group)
       </button>
 
       {/* JSON preview (collapsible) */}
@@ -570,7 +646,7 @@ function ExportPreview({ filter }: { filter: SegmentFilter }) {
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
       >
-        <span>Filter JSON</span>
+        <span>Шүүлтүүрийн бүтэц (Filter JSON)</span>
         <ChevronDown
           className={cn(
             "h-3.5 w-3.5 transition-transform",
