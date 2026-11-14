@@ -21,6 +21,7 @@ import { executeAiResponse } from "./nodes/ai-response";
 import { adaptMessage } from "./platform-adapter";
 import { createZernioClient } from "@/lib/zernio-client";
 import { requestPublicUrl } from "./request-public-url";
+import { sendTelegramMessage, sendTelegramPhoto } from "@/lib/telegram";
 
 export async function executeFlow(
   supabase: SupabaseClient<Database>,
@@ -437,6 +438,12 @@ async function executeSendMessage(
   data: SendMessageNodeData,
   context: FlowExecutionContext
 ) {
+  // Check if this is a direct Telegram channel/conversation
+  const isDirectTelegram =
+    context.lateAccountId?.startsWith("telegram:") ||
+    context.lateConversationId?.startsWith("telegram:") ||
+    context.platform === "telegram";
+
   // Get workspace for API key
   const { data: workspace } = await supabase
     .from("workspaces")
@@ -444,9 +451,11 @@ async function executeSendMessage(
     .eq("id", context.workspaceId)
     .single();
 
-  if (!workspace?.late_api_key_encrypted) return;
+  if (!isDirectTelegram && !workspace?.late_api_key_encrypted) return;
 
-  const zernio = createZernioClient(workspace.late_api_key_encrypted);
+  const zernio = workspace?.late_api_key_encrypted
+    ? createZernioClient(workspace.late_api_key_encrypted)
+    : null;
 
   // Resolve late_account_id from channel if not in context
   let lateAccountId = context.lateAccountId;
@@ -478,7 +487,7 @@ async function executeSendMessage(
       // exactly one private reply per comment, so deliver the first message via
       // the private-reply endpoint instead of silently dropping the whole node
       // (users build comment flows with plain Send Message nodes, not Private Reply).
-      if (context.variables?.comment_id && context.variables?.post_id && lateAccountId) {
+      if (context.variables?.comment_id && context.variables?.post_id && lateAccountId && zernio) {
         await sendFirstMessageAsPrivateReply(supabase, zernio, data, context, lateAccountId);
         return;
       }
@@ -529,10 +538,46 @@ async function executeSendMessage(
         body.replyMarkup = adapted.replyMarkup;
       }
 
-      const response = await zernio.messages.sendInboxMessage({
-        path: { conversationId: lateConversationId },
-        body: body as Parameters<typeof zernio.messages.sendInboxMessage>[0]["body"],
-      });
+      let platformMessageId: string | null = null;
+
+      if (isDirectTelegram || lateConversationId.startsWith("telegram:")) {
+        const chatId = lateConversationId.replace("telegram:", "");
+        const { data: channelData } = await supabase
+          .from("channels")
+          .select("webhook_secret")
+          .eq("id", context.channelId)
+          .single();
+        const botToken = channelData?.webhook_secret;
+
+        if (botToken) {
+          const inline_keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+          if (adapted.buttons?.length) {
+            adapted.buttons.forEach((b: any) => {
+              inline_keyboard.push([{ text: b.title || b.text, callback_data: b.payload || b.url || b.title }]);
+            });
+          }
+          if (adapted.quickReplies?.length) {
+            adapted.quickReplies.forEach((q: any) => {
+              inline_keyboard.push([{ text: q.title, callback_data: q.payload || q.title }]);
+            });
+          }
+          const replyMarkup = inline_keyboard.length > 0 ? { inline_keyboard } : undefined;
+
+          if (mediaUrl) {
+            const res = await sendTelegramPhoto(botToken, chatId, mediaUrl, text, { replyMarkup });
+            platformMessageId = String(res.messageId);
+          } else if (text) {
+            const res = await sendTelegramMessage(botToken, chatId, text, { replyMarkup });
+            platformMessageId = String(res.messageId);
+          }
+        }
+      } else if (zernio) {
+        const response = await zernio.messages.sendInboxMessage({
+          path: { conversationId: lateConversationId },
+          body: body as Parameters<typeof zernio.messages.sendInboxMessage>[0]["body"],
+        });
+        platformMessageId = response.data?.data?.messageId || null;
+      }
 
       // Store outbound message
       await supabase.from("messages").insert({
@@ -542,7 +587,7 @@ async function executeSendMessage(
         attachments: attachments || null,
         sent_by_flow_id: context.flowId,
         sent_by_node_id: null,
-        platform_message_id: response.data?.data?.messageId || null,
+        platform_message_id: platformMessageId,
         status: "sent",
       });
 

@@ -72,6 +72,40 @@ export function ChannelsView({
     instructions: string[];
   } | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const [showTelegramTokenModal, setShowTelegramTokenModal] = useState(false);
+  const [telegramTokenInput, setTelegramTokenInput] = useState("");
+  const [telegramConnecting, setTelegramConnecting] = useState(false);
+  const [telegramError, setTelegramError] = useState<string | null>(null);
+
+  async function handleTelegramConnectSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!telegramTokenInput.trim()) return;
+    setTelegramConnecting(true);
+    setTelegramError(null);
+    try {
+      const res = await fetch("/api/v1/channels/telegram/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: telegramTokenInput.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setTelegramError(data.error || "Failed to connect bot");
+        return;
+      }
+      if (data.channel) {
+        setChannels((prev) => [data.channel, ...prev.filter((c) => c.id !== data.channel.id)]);
+      }
+      setShowTelegramTokenModal(false);
+      setTelegramTokenInput("");
+      setSyncMessage("Telegram bot connected directly & active!");
+      setTimeout(() => setSyncMessage(null), 4000);
+    } catch {
+      setTelegramError("Failed to connect. Please check your network and token.");
+    } finally {
+      setTelegramConnecting(false);
+    }
+  }
 
   // Close picker on outside click
   useEffect(() => {
@@ -87,6 +121,12 @@ export function ChannelsView({
   }, [showPlatformPicker]);
 
   async function handleConnect(platform: Platform) {
+    if (platform === "telegram") {
+      setShowPlatformPicker(false);
+      setShowTelegramTokenModal(true);
+      return;
+    }
+
     setConnecting(platform);
     try {
       const res = await fetch("/api/v1/channels/connect", {
@@ -537,6 +577,81 @@ export function ChannelsView({
                 I&apos;ve Sent It (Sync Channel)
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showTelegramTokenModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-card border border-border p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                <PlatformIcon platform="telegram" className="h-5 w-5" />
+                Connect Telegram Bot (Шууд холболт)
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowTelegramTokenModal(false);
+                  setTelegramError(null);
+                }}
+                className="text-muted-foreground hover:text-foreground text-sm font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleTelegramConnectSubmit} className="space-y-4">
+              <div className="space-y-2 text-xs text-muted-foreground bg-muted/60 p-3 rounded-lg border border-border">
+                <p className="font-semibold text-foreground">Шууд холбох заавар:</p>
+                <ol className="list-decimal list-inside space-y-1">
+                  <li>Telegram дээр <strong className="text-foreground">@BotFather</strong>-ийг нээнэ.</li>
+                  <li><code className="text-primary font-mono font-bold">/newbot</code> комманд өгч ботын нэр, username-ээ үүсгэнэ.</li>
+                  <li>BotFather-оос өгсөн <strong className="text-foreground">HTTP API Token</strong>-ийг доор хуулж тавина.</li>
+                </ol>
+              </div>
+
+              {telegramError && (
+                <div className="text-xs text-red-600 bg-red-50 dark:bg-red-950/50 p-2.5 rounded-lg border border-red-200 dark:border-red-800">
+                  {telegramError}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">
+                  Telegram Bot Token
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+                  value={telegramTokenInput}
+                  onChange={(e) => setTelegramTokenInput(e.target.value)}
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary font-mono text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTelegramTokenModal(false);
+                    setTelegramError(null);
+                  }}
+                  className="px-4 py-2 text-xs font-medium border border-border rounded-lg hover:bg-muted"
+                >
+                  Болих
+                </button>
+                <button
+                  type="submit"
+                  disabled={telegramConnecting || !telegramTokenInput.trim()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-primary text-primary-foreground rounded-lg hover:opacity-90 disabled:opacity-50"
+                >
+                  {telegramConnecting && <Loader2 className="h-3 w-3 animate-spin" />}
+                  {telegramConnecting ? "Холбож байна..." : "Бот холбох"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
