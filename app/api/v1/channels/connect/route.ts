@@ -72,11 +72,23 @@ export async function POST(request: NextRequest) {
       query: { profileId, redirect_url: callbackUrl },
     });
 
-    if (!res.data?.authUrl) {
-      return NextResponse.json({ error: "Failed to get connect URL" }, { status: 500 });
+    const data = res.data as any;
+    if (data?.code) {
+      return NextResponse.json({
+        telegram: {
+          code: data.code,
+          botUsername: data.botUsername || "LateScheduleBot",
+          instructions: data.instructions || [],
+        },
+      });
     }
 
-    return NextResponse.json({ authUrl: res.data.authUrl });
+    if (!data?.authUrl) {
+      const errMsg = (res.error as any)?.message || "Failed to get connect URL";
+      return NextResponse.json({ error: errMsg }, { status: 400 });
+    }
+
+    return NextResponse.json({ authUrl: data.authUrl });
   } catch (error) {
     console.error("Failed to get connect URL:", error);
     return NextResponse.json(

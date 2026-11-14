@@ -66,6 +66,11 @@ export function ChannelsView({
   const [showPlatformPicker, setShowPlatformPicker] = useState(false);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [telegramModalData, setTelegramModalData] = useState<{
+    code: string;
+    botUsername: string;
+    instructions: string[];
+  } | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
 
   // Close picker on outside click
@@ -94,6 +99,11 @@ export function ChannelsView({
       if (!res.ok || data.error) {
         setSyncMessage(data.error || "Failed to connect");
         setTimeout(() => setSyncMessage(null), 4000);
+        return;
+      }
+
+      if (data.telegram) {
+        setTelegramModalData(data.telegram);
         return;
       }
 
@@ -460,6 +470,76 @@ export function ChannelsView({
         onConfirm={handleDelete}
         onCancel={() => setChannelToDelete(null)}
       />
+
+      {telegramModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-card border border-border p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-foreground flex items-center gap-2">
+                <PlatformIcon platform="telegram" className="h-5 w-5" />
+                Connect Telegram
+              </h3>
+              <button
+                type="button"
+                onClick={() => setTelegramModalData(null)}
+                className="text-muted-foreground hover:text-foreground text-sm font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-sm text-muted-foreground">
+              <p className="font-medium text-foreground">Follow these steps:</p>
+              <ol className="list-decimal list-inside space-y-1.5 text-xs">
+                <li>Add <strong className="text-foreground">@{telegramModalData.botUsername}</strong> as an administrator in your channel or group.</li>
+                <li>Open a private chat with <strong className="text-foreground">@{telegramModalData.botUsername}</strong> on Telegram.</li>
+                <li>Send your connection code along with your channel handle:</li>
+              </ol>
+
+              <div className="flex items-center justify-between bg-muted p-2.5 rounded-lg border border-border">
+                <code className="text-sm font-mono font-semibold text-primary">
+                  {telegramModalData.code} @yourchannel
+                </code>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(`${telegramModalData.code} @yourchannel`);
+                    setSyncMessage("Copied code to clipboard!");
+                    setTimeout(() => setSyncMessage(null), 2000);
+                  }}
+                  className="text-xs bg-primary/10 hover:bg-primary/20 text-primary px-2.5 py-1 rounded"
+                >
+                  Copy
+                </button>
+              </div>
+
+              <p className="text-[11px] text-muted-foreground/80 italic">
+                * If your channel is private, forward any message from it to @{telegramModalData.botUsername} along with the code: {telegramModalData.code}
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setTelegramModalData(null)}
+                className="px-4 py-2 text-xs font-medium border border-border rounded-lg hover:bg-muted"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTelegramModalData(null);
+                  handleSync();
+                }}
+                className="px-4 py-2 text-xs font-medium bg-primary text-primary-foreground rounded-lg hover:opacity-90"
+              >
+                I&apos;ve Sent It (Sync Channel)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
