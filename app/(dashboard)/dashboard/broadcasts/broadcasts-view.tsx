@@ -23,6 +23,11 @@ import {
   Eye,
   EyeOff,
   Check,
+  Trash2,
+  Pencil,
+  X,
+  Save,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
@@ -283,6 +288,32 @@ export function BroadcastsView({
     }
   }
 
+  const [broadcastToDelete, setBroadcastToDelete] = useState<Broadcast | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  async function handleDeleteFromList(broadcast: Broadcast) {
+    setDeletingId(broadcast.id);
+    try {
+      const res = await fetch(`/api/v1/broadcasts/${broadcast.id}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Устгахад алдаа гарлаа");
+      }
+      setItems((prev) => prev.filter((b) => b.id !== broadcast.id));
+      if (selectedId === broadcast.id) {
+        setSelectedId(null);
+      }
+      setBroadcastToDelete(null);
+    } catch (err) {
+      console.error("Failed to delete broadcast:", err);
+      alert(err instanceof Error ? err.message : "Устгахад алдаа гарлаа");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   const selectedBroadcast = selectedId
     ? items.find((b) => b.id === selectedId) ?? null
     : null;
@@ -298,6 +329,10 @@ export function BroadcastsView({
           setItems((prev) =>
             prev.map((b) => (b.id === updated.id ? updated : b))
           );
+        }}
+        onDelete={(deletedId) => {
+          setItems((prev) => prev.filter((b) => b.id !== deletedId));
+          setSelectedId(null);
         }}
       />
     );
@@ -733,15 +768,15 @@ export function BroadcastsView({
               const prodTargeting = filter?.productTargeting;
 
               return (
-                <button
+                <div
                   key={broadcast.id}
                   onClick={() => setSelectedId(broadcast.id)}
-                  className="flex w-full items-center gap-6 px-8 py-4 text-left transition-colors hover:bg-accent/50"
+                  className="group flex w-full items-center justify-between gap-6 px-8 py-4 text-left transition-colors hover:bg-accent/50 cursor-pointer"
                 >
                   {/* Status + Name */}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-3">
-                      <h3 className="truncate text-sm font-medium">
+                      <h3 className="truncate text-sm font-medium group-hover:text-primary transition-colors">
                         {broadcast.name}
                       </h3>
                       <span
@@ -785,45 +820,113 @@ export function BroadcastsView({
                     </div>
                   </div>
 
-                  {/* Stats */}
-                  <div className="flex items-center gap-6">
-                    <div className="text-center">
-                      <p className="text-lg font-semibold">{total}</p>
-                      <p className="text-[10px] uppercase text-muted-foreground">
-                        Recipients
-                      </p>
+                  {/* Stats & Actions */}
+                  <div className="flex items-center gap-6 shrink-0">
+                    <div className="flex items-center gap-6">
+                      <div className="text-center">
+                        <p className="text-lg font-semibold">{total}</p>
+                        <p className="text-[10px] uppercase text-muted-foreground">
+                          Recipients
+                        </p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-lg font-semibold text-green-600">
+                          {broadcast.sent}
+                        </p>
+                        <p className="text-[10px] uppercase text-muted-foreground">
+                          Sent
+                        </p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-lg font-semibold text-blue-600">
+                          {broadcast.delivered}
+                        </p>
+                        <p className="text-[10px] uppercase text-muted-foreground">
+                          Delivered
+                        </p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-lg font-semibold text-red-600">
+                          {broadcast.failed}
+                        </p>
+                        <p className="text-[10px] uppercase text-muted-foreground">
+                          Failed
+                        </p>
+                      </div>
                     </div>
-                    <div className="text-center">
-                      <p className="text-lg font-semibold text-green-600">
-                        {broadcast.sent}
-                      </p>
-                      <p className="text-[10px] uppercase text-muted-foreground">
-                        Sent
-                      </p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-lg font-semibold text-blue-600">
-                        {broadcast.delivered}
-                      </p>
-                      <p className="text-[10px] uppercase text-muted-foreground">
-                        Delivered
-                      </p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-lg font-semibold text-red-600">
-                        {broadcast.failed}
-                      </p>
-                      <p className="text-[10px] uppercase text-muted-foreground">
-                        Failed
-                      </p>
-                    </div>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setBroadcastToDelete(broadcast);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-2 text-muted-foreground hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-all"
+                      title="Broadcast устгах"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal for List View */}
+      {broadcastToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in-50">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-xl space-y-4">
+            <div className="flex items-center gap-3 text-red-600">
+              <div className="rounded-full bg-red-100 dark:bg-red-950/50 p-2.5">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-base text-foreground">
+                  Broadcast устгах уу?
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Энэ үйлдлийг буцаах боломжгүй
+                </p>
+              </div>
+            </div>
+
+            <p className="text-sm text-foreground/80">
+              Та <strong className="text-foreground">"{broadcastToDelete.name}"</strong> нэртэй broadcast-ийг устгахдаа итгэлтэй байна уу?
+              {broadcastToDelete.status === "scheduled" && (
+                <span className="block mt-2 rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 p-2 text-xs text-amber-800 dark:text-amber-300">
+                  ⚠️ Энэ нь товлосон цагийн хуваарьтай байгаа бөгөөд автомат илгээлт цуцлагдана.
+                </span>
+              )}
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t">
+              <button
+                type="button"
+                disabled={Boolean(deletingId)}
+                onClick={() => setBroadcastToDelete(null)}
+                className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:bg-accent disabled:opacity-50"
+              >
+                Болих
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(deletingId)}
+                onClick={() => handleDeleteFromList(broadcastToDelete)}
+                className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 shadow-sm"
+              >
+                {deletingId ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+                {deletingId ? "Устгаж байна..." : "Устгах"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -834,18 +937,24 @@ function BroadcastDetail({
   facebookChannels = [],
   onBack,
   onUpdate,
+  onDelete,
 }: {
   broadcast: Broadcast;
   workspaceId: string;
   facebookChannels?: Channel[];
   onBack: () => void;
   onUpdate: (updated: Broadcast) => void;
+  onDelete?: (deletedId: string) => void;
 }) {
   const messageContent = broadcast.message_content as { text?: string } | null;
+  const [broadcastName, setBroadcastName] = useState(broadcast.name);
+  const [isEditingName, setIsEditingName] = useState(false);
   const [messageText, setMessageText] = useState(messageContent?.text || "");
   const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [scheduling, setScheduling] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -904,24 +1013,53 @@ function BroadcastDetail({
     setSaving(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const newContent = { text: messageText.trim() };
-      const { data, error: err } = await supabase
-        .from("broadcasts")
-        .update({ message_content: newContent as unknown as Json })
-        .eq("id", broadcast.id)
-        .select()
-        .single();
+      const res = await fetch(`/api/v1/broadcasts/${broadcast.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: broadcastName.trim() || broadcast.name,
+          messageContent: { text: messageText },
+        }),
+      });
 
-      if (err) throw err;
-      if (data) {
-        onUpdate(data);
-        setSuccess("Ноорог хадгалагдлаа");
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || "Хадгалахад алдаа гарлаа");
       }
+
+      const data = await res.json();
+      onUpdate(data);
+      setIsEditingName(false);
+      setSuccess("Өөрчлөлт амжилттай хадгалагдлаа");
+      setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Хадгалахад алдаа гарлаа");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDeleteBroadcast() {
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/broadcasts/${broadcast.id}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Устгахад алдаа гарлаа");
+      }
+      setShowDeleteModal(false);
+      if (onDelete) {
+        onDelete(broadcast.id);
+      } else {
+        onBack();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Устгахад алдаа гарлаа");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -1041,34 +1179,101 @@ function BroadcastDetail({
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="border-b border-border px-8 py-6">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={onBack}
-            className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <div className="flex-1">
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold">{broadcast.name}</h1>
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium",
-                  status.className
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4 flex-1 min-w-0">
+            <button
+              onClick={onBack}
+              className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground shrink-0"
+              title="Буцах"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </button>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-3 flex-wrap">
+                {isEditingName ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={broadcastName}
+                      onChange={(e) => setBroadcastName(e.target.value)}
+                      className="rounded-lg border border-input bg-background px-3 py-1 text-xl font-bold focus:outline-none focus:ring-2 focus:ring-ring"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSave();
+                        if (e.key === "Escape") {
+                          setBroadcastName(broadcast.name);
+                          setIsEditingName(false);
+                        }
+                      }}
+                    />
+                    <button
+                      onClick={handleSave}
+                      disabled={saving || !broadcastName.trim()}
+                      className="rounded-lg bg-primary p-2 text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      title="Нэр хадгалах"
+                    >
+                      {saving ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Check className="h-4 w-4" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setBroadcastName(broadcast.name);
+                        setIsEditingName(false);
+                      }}
+                      className="rounded-lg border border-border p-2 text-muted-foreground hover:bg-accent"
+                      title="Болих"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 group">
+                    <h1 className="text-2xl font-bold truncate max-w-md">{broadcastName}</h1>
+                    {isDraftOrScheduled && (
+                      <button
+                        onClick={() => setIsEditingName(true)}
+                        className="rounded p-1 text-muted-foreground hover:text-foreground opacity-60 hover:opacity-100 transition-opacity"
+                        title="Нэр засах"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
                 )}
-              >
-                <StatusIcon
+                <span
                   className={cn(
-                    "h-3.5 w-3.5",
-                    broadcast.status === "sending" && "animate-spin"
+                    "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium shrink-0",
+                    status.className
                   )}
-                />
-                {status.label}
-              </span>
+                >
+                  <StatusIcon
+                    className={cn(
+                      "h-3.5 w-3.5",
+                      broadcast.status === "sending" && "animate-spin"
+                    )}
+                  />
+                  {status.label}
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Created {formatDate(broadcast.created_at)}
+              </p>
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Created {formatDate(broadcast.created_at)}
-            </p>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              disabled={deleting}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50/70 dark:bg-red-950/20 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors shadow-sm"
+              title="Broadcast бүрэн устгах"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Broadcast устгах
+            </button>
           </div>
         </div>
       </div>
@@ -1224,10 +1429,70 @@ function BroadcastDetail({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-sm font-semibold">Илгээх зурвас (Message)</label>
-              <span className="text-xs text-muted-foreground">
-                {messageText.length} тэмдэгт
-              </span>
+              <div className="flex items-center gap-3">
+                {messageText.length > 0 && isDraftOrScheduled && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm("Зурвасын текстийг цэвэрлэх үү?")) {
+                        setMessageText("");
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-red-600 transition-colors font-medium"
+                    title="Зурвасын текстийг арилгах"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Текст цэвэрлэх
+                  </button>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  {messageText.length} тэмдэгт
+                </span>
+              </div>
             </div>
+
+            {/* Quick Template suggestions */}
+            {isDraftOrScheduled && (
+              <div className="flex items-center gap-2 flex-wrap text-xs">
+                <span className="text-muted-foreground text-[11px]">Бэлэн загвар:</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const prod = prodTargeting?.productName || "бүтээгдэхүүн";
+                    setMessageText(
+                      `Сайн байна уу? Танд энэ өдрийн мэнд хүргэе! 🎉\nМанайхаас өмнө нь ${prod} авч байсан танд зориулан тусгай 20% хямдрал эхэллээ! 🎁\nТанд сонирхсон зүйл байвал энд хариу бичнэ үү.`
+                    );
+                  }}
+                  className="rounded-md border border-border bg-accent/40 hover:bg-accent px-2 py-0.5 text-[11px] text-foreground transition-colors"
+                >
+                  🎁 Хямдрал, урамшуулал
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const prod = prodTargeting?.productName || "бүтээгдэхүүн";
+                    setMessageText(
+                      `Сайн байна уу? Та манай ${prod} бүтээгдэхүүний талаар сонирхож байсан билээ. 📦\nШинэ багц ирсэн тул танд онцгой нөхцөлөөр санал болгож байна. Дэлгэрэнгүйг сонирхох уу?`
+                    );
+                  }}
+                  className="rounded-md border border-border bg-accent/40 hover:bg-accent px-2 py-0.5 text-[11px] text-foreground transition-colors"
+                >
+                  📦 Шинэ багц, бараа ирсэн
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMessageText(
+                      `Эрхэм хэрэглэгч танд энэ өдрийн мэнд хүргэе! ✨ Танд үйлчилгээ болон бүтээгдэхүүний талаар асууж тодруулах зүйл байвал бид байнга бэлэн байна.`
+                    );
+                  }}
+                  className="rounded-md border border-border bg-accent/40 hover:bg-accent px-2 py-0.5 text-[11px] text-foreground transition-colors"
+                >
+                  💬 Мэндчилгээ & Тусламж
+                </button>
+              </div>
+            )}
+
             <textarea
               value={messageText}
               onChange={(e) => setMessageText(e.target.value)}
@@ -1299,10 +1564,15 @@ function BroadcastDetail({
 
               <button
                 onClick={handleSave}
-                disabled={saving || !messageText.trim()}
-                className="inline-flex items-center gap-2 rounded-lg border border-input bg-background px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent disabled:opacity-50"
+                disabled={saving}
+                className="inline-flex items-center gap-2 rounded-lg border border-input bg-background px-4 py-2.5 text-sm font-medium text-foreground hover:bg-accent disabled:opacity-50 shadow-sm"
               >
-                {saving ? "Хадгалж байна..." : "Ноорог хадгалах"}
+                {saving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4 text-primary" />
+                )}
+                {saving ? "Хадгалж байна..." : "Өөрчлөлтийг хадгалах"}
               </button>
             </div>
           )}
@@ -1380,6 +1650,60 @@ function BroadcastDetail({
               >
                 {scheduling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
                 {scheduling ? "Товлож байна..." : "Товлох"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal for Detail View */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in-50">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-xl space-y-4">
+            <div className="flex items-center gap-3 text-red-600">
+              <div className="rounded-full bg-red-100 dark:bg-red-950/50 p-2.5">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-base text-foreground">
+                  Broadcast устгах уу?
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Энэ үйлдлийг буцаах боломжгүй
+                </p>
+              </div>
+            </div>
+
+            <p className="text-sm text-foreground/80">
+              Та <strong className="text-foreground">"{broadcastName}"</strong> нэртэй broadcast-ийг бүрэн устгахдаа итгэлтэй байна уу?
+              {broadcast.status === "scheduled" && (
+                <span className="block mt-2 rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 p-2 text-xs text-amber-800 dark:text-amber-300">
+                  ⚠️ Энэ нь товлосон цагийн хуваарьтай байгаа бөгөөд автомат илгээлт цуцлагдана.
+                </span>
+              )}
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setShowDeleteModal(false)}
+                className="rounded-lg px-4 py-2 text-sm text-muted-foreground hover:bg-accent disabled:opacity-50"
+              >
+                Болих
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleDeleteBroadcast}
+                className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 shadow-sm"
+              >
+                {deleting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+                {deleting ? "Устгаж байна..." : "Тийм, устгах"}
               </button>
             </div>
           </div>
