@@ -233,11 +233,11 @@ export function BroadcastsView({
         groups: showSegmentFilter ? segmentFilter.groups : [],
         productTargeting: enableProductTargeting && productName.trim()
           ? {
-              enabled: true,
-              channelId: targetChannelId,
-              productName: productName.trim(),
-              audienceType,
-            }
+            enabled: true,
+            channelId: targetChannelId,
+            productName: productName.trim(),
+            audienceType,
+          }
           : undefined,
       };
 
@@ -542,8 +542,8 @@ export function BroadcastsView({
                             {previewLoading
                               ? "Facebook харилцагчдаас хайж байна..."
                               : previewCount !== null
-                              ? `🎯 Нийт ${previewCount} тохирох хэрэглэгч олдлоо`
-                              : "Шүүлтүүрийн үр дүнг шалгаж байна..."}
+                                ? `🎯 Нийт ${previewCount} тохирох хэрэглэгч олдлоо`
+                                : "Шүүлтүүрийн үр дүнг шалгаж байна..."}
                           </span>
                         </div>
 
@@ -736,8 +736,8 @@ export function BroadcastsView({
                 {creating
                   ? "Үүсгэж байна..."
                   : isScheduled
-                  ? "Товлоод үүсгэх"
-                  : "Үүсгээд нээх"}
+                    ? "Товлоод үүсгэх"
+                    : "Үүсгээд нээх"}
               </button>
             </div>
           </div>
@@ -801,8 +801,8 @@ export function BroadcastsView({
                           {prodTargeting.audienceType === "purchased"
                             ? "Авсан"
                             : prodTargeting.audienceType === "interested"
-                            ? "Сонирхсон"
-                            : "Бүгд"}
+                              ? "Сонирхсон"
+                              : "Бүгд"}
                           )
                         </span>
                       )}
@@ -1351,8 +1351,8 @@ function BroadcastDetail({
                         {prodTargeting.audienceType === "purchased"
                           ? "Өмнө нь худалдан авч байсан хүмүүс"
                           : prodTargeting.audienceType === "interested"
-                          ? "Сонирхож лавлаж байсан хүмүүс"
-                          : "Сонирхсон болон авсан бүх хүмүүс"}
+                            ? "Сонирхож лавлаж байсан хүмүүс"
+                            : "Сонирхсон болон авсан бүх хүмүүс"}
                       </span>
                     </p>
                   </div>
