@@ -7,12 +7,16 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
   Lock,
+  Mail,
+  KeyRound,
   CheckCircle2,
   AlertCircle,
   Loader2,
   Eye,
   EyeOff,
   ArrowRight,
+  ArrowLeft,
+  Sparkles,
 } from "lucide-react";
 
 export default function ResetPasswordPage() {
@@ -27,26 +31,75 @@ export default function ResetPasswordPage() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [hasValidSession, setHasValidSession] = useState(false);
 
+  // Fallback OTP / Token inputs if redirect failed
+  const [manualEmail, setManualEmail] = useState("");
+  const [manualToken, setManualToken] = useState("");
+  const [showManualForm, setShowManualForm] = useState(false);
+
   const router = useRouter();
   const supabase = createClient();
 
   useEffect(() => {
-    // Check if error was passed in URL (e.g. from callback or hash)
-    if (typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      const urlError =
-        url.searchParams.get("error_description") ||
-        url.searchParams.get("error");
+    async function checkAuthSources() {
+      // 1. Check if error was passed in URL query
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        const urlError =
+          url.searchParams.get("error_description") ||
+          url.searchParams.get("error");
 
-      if (urlError) {
-        setError(decodeURIComponent(urlError));
-        setCheckingSession(false);
-        return;
+        if (urlError) {
+          setError(decodeURIComponent(urlError));
+          setShowManualForm(true);
+          setCheckingSession(false);
+          return;
+        }
+
+        // 2. Check if a code is in query params (?code=...)
+        const code = url.searchParams.get("code");
+        if (code) {
+          try {
+            const { data, error: codeErr } =
+              await supabase.auth.exchangeCodeForSession(code);
+            if (!codeErr && data.session) {
+              setHasValidSession(true);
+              setCheckingSession(false);
+              return;
+            }
+          } catch (e) {
+            console.warn("Error exchanging code for session:", e);
+          }
+        }
+
+        // 3. Check if tokens are in URL hash (#access_token=...&refresh_token=...)
+        const hash = window.location.hash;
+        if (hash && hash.includes("access_token=")) {
+          try {
+            const cleanHash = hash.replace(/^#/, "");
+            const params = new URLSearchParams(cleanHash);
+            const accessToken = params.get("access_token");
+            const refreshToken = params.get("refresh_token");
+
+            if (accessToken && refreshToken) {
+              const { data, error: setSessionErr } =
+                await supabase.auth.setSession({
+                  access_token: accessToken,
+                  refresh_token: refreshToken,
+                });
+
+              if (!setSessionErr && data.session) {
+                setHasValidSession(true);
+                setCheckingSession(false);
+                return;
+              }
+            }
+          } catch (e) {
+            console.warn("Error setting session from URL hash:", e);
+          }
+        }
       }
-    }
 
-    // Check existing session or listen for PASSWORD_RECOVERY event
-    async function verify() {
+      // 4. Check existing session
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -57,7 +110,7 @@ export default function ResetPasswordPage() {
         return;
       }
 
-      // Listen for auth state change (covers hash recovery flow)
+      // 5. Listen for auth state change
       const {
         data: { subscription },
       } = supabase.auth.onAuthStateChange((event, session) => {
@@ -67,7 +120,7 @@ export default function ResetPasswordPage() {
         }
       });
 
-      // Small delay to allow client SDK to parse token from URL hash if present
+      // Timeout fallback
       const timer = setTimeout(async () => {
         const {
           data: { session: delayedSession },
@@ -75,9 +128,11 @@ export default function ResetPasswordPage() {
 
         if (delayedSession) {
           setHasValidSession(true);
+        } else {
+          setShowManualForm(true);
         }
         setCheckingSession(false);
-      }, 1200);
+      }, 1000);
 
       return () => {
         subscription.unsubscribe();
@@ -85,10 +140,10 @@ export default function ResetPasswordPage() {
       };
     }
 
-    verify();
+    checkAuthSources();
   }, [supabase]);
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSessionSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
@@ -115,7 +170,81 @@ export default function ResetPasswordPage() {
 
       setSuccess(true);
 
-      // Redirect to dashboard after 1.8 seconds
+      setTimeout(() => {
+        router.push("/dashboard");
+        router.refresh();
+      }, 1800);
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Нууц үг шинэчлэхэд алдаа гарлаа";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleManualSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+
+    if (!manualEmail.trim()) {
+      setError("И-мэйл хаягаа оруулна уу.");
+      return;
+    }
+
+    if (!manualToken.trim()) {
+      setError("И-мэйлээр ирсэн код эсвэл token-оо оруулна уу.");
+      return;
+    }
+
+    if (password.length < 6) {
+      setError("Нууц үг хамгийн багадаа 6 тэмдэгттэй байх ёстой.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("Оруулсан хоёр нууц үг хоорондоо таарахгүй байна.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      // 1. Verify OTP token for recovery
+      let cleanToken = manualToken.trim();
+      // If user pasted a full URL or token= parameter, extract the token
+      if (cleanToken.includes("token=")) {
+        const match = cleanToken.match(/token=([a-zA-Z0-9_-]+)/);
+        if (match) cleanToken = match[1];
+      }
+
+      const { data: verifyData, error: verifyError } =
+        await supabase.auth.verifyOtp({
+          email: manualEmail.trim(),
+          token: cleanToken,
+          type: "recovery",
+        });
+
+      if (verifyError || !verifyData.session) {
+        throw new Error(
+          verifyError?.message ||
+            "Код буруу эсвэл хугацаа нь дууссан байна. Шинээр хүсэлт илгээнэ үү."
+        );
+      }
+
+      // 2. Update user's password using established session
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: password,
+      });
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      setSuccess(true);
+
       setTimeout(() => {
         router.push("/dashboard");
         router.refresh();
@@ -132,7 +261,7 @@ export default function ResetPasswordPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
+    <div className="flex min-h-screen items-center justify-center px-4 py-8">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <Image
@@ -180,40 +309,9 @@ export default function ResetPasswordPage() {
               </Link>
             </div>
           </div>
-        ) : !hasValidSession ? (
-          <div className="rounded-xl border border-destructive/20 bg-card p-6 shadow-sm space-y-4 text-center">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-              <AlertCircle className="h-6 w-6" />
-            </div>
-
-            <div className="space-y-1">
-              <h3 className="font-semibold text-foreground">
-                Холбоос хүчингүй эсвэл хугацаа нь дууссан байна
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                {error ||
-                  "Нууц үг сэргээх холбоосыг зөвхөн нэг удаа ашиглах боломжтой бөгөөд хугацаа нь дууссан байж болзошгүй."}
-              </p>
-            </div>
-
-            <div className="pt-2 space-y-2">
-              <Link
-                href="/forgot-password"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-medium text-primary-foreground hover:opacity-90"
-              >
-                Шинээр холбоос авах
-              </Link>
-
-              <Link
-                href="/login"
-                className="inline-flex w-full items-center justify-center rounded-lg border border-input bg-background px-4 py-2 text-xs font-medium text-muted-foreground hover:bg-accent"
-              >
-                Нэвтрэх хуудас руу буцах
-              </Link>
-            </div>
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
+        ) : hasValidSession ? (
+          /* Active session flow: user just enters new password */
+          <form onSubmit={handleSessionSubmit} className="space-y-4">
             <div>
               <label
                 htmlFor="password"
@@ -284,6 +382,156 @@ export default function ResetPasswordPage() {
               {loading ? "Хадгалж байна..." : "Шинэ нууц үг хадгалах"}
             </button>
           </form>
+        ) : (
+          /* Manual token / OTP flow when redirect link pointed to localhost */
+          <div className="space-y-4">
+            <div className="rounded-xl border border-amber-200 dark:border-amber-900/50 bg-amber-50/70 dark:bg-amber-950/20 p-4 space-y-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-amber-900 dark:text-amber-300">
+                <Sparkles className="h-4 w-4 text-amber-600" />
+                Кодоор шууд шинэчлэх
+              </div>
+              <p className="text-xs text-amber-800/90 dark:text-amber-300/80 leading-relaxed">
+                Хэрэв и-мэйлээр ирсэн линк localhost руу зааж байгаа бол доорх
+                талбарт бүртгэлтэй <strong>И-мэйл</strong> болон и-мэйлээр ирсэн{" "}
+                <strong>6-8 оронтой код</strong> (эсвэл линкэн дээрх token-оо) оруулаад шинэ нууц үгээ шууд хадгалж болно.
+              </p>
+            </div>
+
+            <form onSubmit={handleManualSubmit} className="space-y-3.5">
+              <div>
+                <label
+                  htmlFor="manualEmail"
+                  className="block text-xs font-medium mb-1"
+                >
+                  Бүртгэлтэй и-мэйл хаяг
+                </label>
+                <div className="relative">
+                  <input
+                    id="manualEmail"
+                    type="email"
+                    value={manualEmail}
+                    onChange={(e) => setManualEmail(e.target.value)}
+                    required
+                    placeholder="Жишээ: beautytechllc24@gmail.com"
+                    className="w-full rounded-lg border border-input bg-background pl-9 pr-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <Mail className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="manualToken"
+                  className="block text-xs font-medium mb-1"
+                >
+                  Баталгаажуулах код (OTP эсвэл Token)
+                </label>
+                <div className="relative">
+                  <input
+                    id="manualToken"
+                    type="text"
+                    value={manualToken}
+                    onChange={(e) => setManualToken(e.target.value)}
+                    required
+                    placeholder="Жишээ: 58705843 эсвэл линкийн token"
+                    className="w-full rounded-lg border border-input bg-background pl-9 pr-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring font-mono"
+                  />
+                  <KeyRound className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="manualPassword"
+                  className="block text-xs font-medium mb-1"
+                >
+                  Шинэ нууц үг
+                </label>
+                <div className="relative">
+                  <input
+                    id="manualPassword"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    placeholder="Хамгийн багадаа 6 тэмдэгт"
+                    className="w-full rounded-lg border border-input bg-background pl-9 pr-10 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <Lock className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="manualConfirmPassword"
+                  className="block text-xs font-medium mb-1"
+                >
+                  Шинэ нууц үгээ дахин оруулах
+                </label>
+                <div className="relative">
+                  <input
+                    id="manualConfirmPassword"
+                    type={showPassword ? "text" : "password"}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    placeholder="Нууц үгээ давтан бичнэ үү"
+                    className="w-full rounded-lg border border-input bg-background pl-9 pr-10 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
+                  <Lock className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                </div>
+              </div>
+
+              {error && (
+                <div className="flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={
+                  loading ||
+                  !manualEmail ||
+                  !manualToken ||
+                  !password ||
+                  !confirmPassword
+                }
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+                {loading ? "Шалгаж байна..." : "Шинэ нууц үг хадгалах"}
+              </button>
+            </form>
+
+            <div className="flex items-center justify-between pt-2 border-t text-xs">
+              <Link
+                href="/forgot-password"
+                className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              >
+                <ArrowLeft className="h-3 w-3" />
+                Дахин холбоос авах
+              </Link>
+              <Link
+                href="/login"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                Нэвтрэх рүү буцах
+              </Link>
+            </div>
+          </div>
         )}
       </div>
     </div>
