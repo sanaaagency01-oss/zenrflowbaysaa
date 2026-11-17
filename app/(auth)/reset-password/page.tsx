@@ -160,12 +160,15 @@ export default function ResetPasswordPage() {
     setLoading(true);
 
     try {
-      const { error: updateError } = await supabase.auth.updateUser({
-        password: password,
+      const res = await fetch("/api/v1/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
       });
 
-      if (updateError) {
-        throw updateError;
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Нууц үг шинэчлэхэд алдаа гарлаа");
       }
 
       setSuccess(true);
@@ -212,35 +215,25 @@ export default function ResetPasswordPage() {
     setLoading(true);
 
     try {
-      // 1. Verify OTP token for recovery
       let cleanToken = manualToken.trim();
-      // If user pasted a full URL or token= parameter, extract the token
       if (cleanToken.includes("token=")) {
         const match = cleanToken.match(/token=([a-zA-Z0-9_-]+)/);
         if (match) cleanToken = match[1];
       }
 
-      const { data: verifyData, error: verifyError } =
-        await supabase.auth.verifyOtp({
+      const res = await fetch("/api/v1/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           email: manualEmail.trim(),
           token: cleanToken,
-          type: "recovery",
-        });
-
-      if (verifyError || !verifyData.session) {
-        throw new Error(
-          verifyError?.message ||
-            "Код буруу эсвэл хугацаа нь дууссан байна. Шинээр хүсэлт илгээнэ үү."
-        );
-      }
-
-      // 2. Update user's password using established session
-      const { error: updateError } = await supabase.auth.updateUser({
-        password: password,
+          password,
+        }),
       });
 
-      if (updateError) {
-        throw updateError;
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Нууц үг шинэчлэхэд алдаа гарлаа");
       }
 
       setSuccess(true);

@@ -21,30 +21,23 @@ export default function ForgotPasswordPage() {
     setError(null);
 
     try {
-      const currentOrigin =
-        typeof window !== "undefined" ? window.location.origin : "";
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
-      const origin =
-        typeof window !== "undefined" && window.location.hostname !== "localhost"
-          ? currentOrigin
-          : appUrl || currentOrigin;
+      const res = await fetch("/api/v1/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
 
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(
-        email.trim(),
-        {
-          redirectTo: `${origin}/auth/callback?next=/reset-password`,
-        }
-      );
+      const data = await res.json();
 
-      if (resetError) {
-        throw resetError;
+      if (!res.ok) {
+        throw new Error(data.error || "И-мэйл илгээхэд алдаа гарлаа");
       }
 
       setIsSubmitted(true);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "И-мэйл илгээхэд алдаа гарлаа";
       if (msg.includes("rate limit") || msg.includes("over_email_send_rate_limit")) {
-        setError("Хэт олон удаа хүсэлт илгээсэн байна. Түр хүлээгээд дахин оролдоно уу.");
+        setError("Хэт олон удаа хүсэлт илгээсэн байна. 1-2 минут хүлээгээд дахин оролдоно уу.");
       } else {
         setError(msg);
       }
