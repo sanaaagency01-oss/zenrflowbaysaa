@@ -399,7 +399,15 @@ function MessageEditor({
                   <input
                     type="text"
                     value={qr.title}
-                    onChange={(e) => updateQuickReply(i, { ...qr, title: e.target.value })}
+                    onChange={(e) => {
+                      const newTitle = e.target.value;
+                      const shouldSyncPayload = !qr.payload || qr.payload === qr.title;
+                      updateQuickReply(i, {
+                        ...qr,
+                        title: newTitle,
+                        payload: shouldSyncPayload ? newTitle : qr.payload,
+                      });
+                    }}
                     placeholder="Label"
                     className="flex-1 rounded border border-border bg-card px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
@@ -407,7 +415,7 @@ function MessageEditor({
                     type="text"
                     value={qr.payload}
                     onChange={(e) => updateQuickReply(i, { ...qr, payload: e.target.value })}
-                    placeholder="Payload"
+                    placeholder={qr.title || "Payload"}
                     className="flex-1 rounded border border-border bg-card px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <button
@@ -448,7 +456,16 @@ function MessageEditor({
                     <input
                       type="text"
                       value={btn.title}
-                      onChange={(e) => updateButton(i, { ...btn, title: e.target.value })}
+                      onChange={(e) => {
+                        const newTitle = e.target.value;
+                        const shouldSyncPayload =
+                          btn.type === "postback" && (!btn.payload || btn.payload === btn.title);
+                        updateButton(i, {
+                          ...btn,
+                          title: newTitle,
+                          payload: shouldSyncPayload ? newTitle : btn.payload,
+                        });
+                      }}
                       placeholder="Button label"
                       className="flex-1 rounded border border-border bg-card px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />

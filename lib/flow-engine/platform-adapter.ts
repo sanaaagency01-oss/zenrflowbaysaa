@@ -101,23 +101,51 @@ function adaptForMeta(content: MessageContent): AdaptedMessage {
         title: el.title,
         subtitle: el.subtitle,
         imageUrl: el.imageUrl,
-        buttons: el.buttons?.map((btn) => ({
-          type: btn.type,
-          title: btn.title,
-          url: btn.url,
-          payload: btn.payload,
-        })),
+        buttons: el.buttons
+          ?.filter((btn) => btn.title?.trim())
+          ?.map((btn) => ({
+            type: btn.type,
+            title: btn.title.trim().slice(0, 20),
+            url: btn.url,
+            payload:
+              btn.type === "postback"
+                ? btn.payload?.trim() || btn.title.trim() || "button_click"
+                : btn.payload,
+          })),
       })),
     };
     return result;
   }
 
-  // Pass through buttons and quick replies for the SDK
+  // Pass through buttons and quick replies for the SDK.
+  // Meta requires non-empty payloads for quick replies and postback buttons,
+  // and limits button/quick-reply titles to 20 characters.
   if (content.buttons?.length) {
-    result.buttons = content.buttons;
+    const validButtons = content.buttons
+      .filter((btn) => btn.title?.trim())
+      .map((btn) => ({
+        type: btn.type,
+        title: btn.title.trim().slice(0, 20),
+        url: btn.url,
+        payload:
+          btn.type === "postback"
+            ? btn.payload?.trim() || btn.title.trim() || "button_click"
+            : btn.payload,
+      }));
+    if (validButtons.length > 0) {
+      result.buttons = validButtons;
+    }
   }
   if (content.quickReplies?.length) {
-    result.quickReplies = content.quickReplies;
+    const validReplies = content.quickReplies
+      .filter((qr) => qr.title?.trim())
+      .map((qr) => ({
+        title: qr.title.trim().slice(0, 20),
+        payload: qr.payload?.trim() || qr.title.trim() || "quick_reply",
+      }));
+    if (validReplies.length > 0) {
+      result.quickReplies = validReplies;
+    }
   }
 
   return result;
@@ -255,5 +283,6 @@ export function parseNumberedResponse(
 ): string | null {
   const num = parseInt(text.trim(), 10);
   if (isNaN(num) || num < 1 || num > options.length) return null;
-  return options[num - 1].payload;
+  const opt = options[num - 1];
+  return opt.payload?.trim() || opt.title?.trim() || null;
 }

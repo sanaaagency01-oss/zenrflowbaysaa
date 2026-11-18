@@ -74,4 +74,38 @@ describe("adaptMessage for whatsapp", () => {
 
     expect(adapted.template?.type).toBe("generic");
   });
+
+  it("sanitizes empty quick reply payload to title and caps title to 20 chars for meta", () => {
+    const adapted = adaptMessage(
+      {
+        text: "Hello",
+        quickReplies: [
+          { title: "Нэгдэх", payload: "" },
+          { title: "A very long title exceeding twenty characters limit", payload: "custom" },
+        ],
+      },
+      "instagram"
+    );
+
+    expect(adapted.quickReplies).toEqual([
+      { title: "Нэгдэх", payload: "Нэгдэх" },
+      { title: "A very long title ex", payload: "custom" },
+    ]);
+  });
+
+  it("sanitizes empty postback button payload to title and caps title for meta", () => {
+    const adapted = adaptMessage(
+      {
+        text: "Hello",
+        buttons: [
+          { title: "Дэлгэрэнгүй", type: "postback", payload: "" },
+        ],
+      },
+      "facebook"
+    );
+
+    expect(adapted.buttons).toEqual([
+      { title: "Дэлгэрэнгүй", type: "postback", payload: "Дэлгэрэнгүй" },
+    ]);
+  });
 });

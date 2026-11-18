@@ -382,23 +382,48 @@ async function sendFirstMessageAsPrivateReply(
   data: SendMessageNodeData,
   context: FlowExecutionContext,
   lateAccountId: string
-) {
+): Promise<boolean> {
   const first = data.messages[0];
-  if (!first) return;
+  if (!first) return false;
 
+  const adapted = adaptMessage(first, context.platform ?? "instagram");
   const text = interpolateVariables(
-    adaptMessage(first, context.platform ?? "instagram").text,
+    adapted.text,
     context.variables || {}
   );
 
   try {
-    await zernio.comments.sendPrivateReplyToComment({
+    const body: Parameters<typeof zernio.comments.sendPrivateReplyToComment>[0]["body"] = {
+      accountId: lateAccountId,
+      message: text,
+    };
+
+    // Meta buttons vs quickReplies in private reply:
+    // buttons and quickReplies are mutually exclusive in Meta private reply.
+    // buttons are visible even in Instagram message requests folder (recommended for cold reach).
+    if (adapted.buttons?.length) {
+      body.buttons = adapted.buttons.map((btn) => ({
+        type: btn.type,
+        title: btn.title.slice(0, 20),
+        url: btn.url || "",
+        payload: btn.payload?.trim() || btn.title.trim() || "button_click",
+      })) as any;
+    } else if (adapted.quickReplies?.length) {
+      body.quickReplies = adapted.quickReplies.map((qr) => ({
+        title: qr.title.slice(0, 20),
+        payload: qr.payload?.trim() || qr.title.trim() || "quick_reply",
+      }));
+    }
+
+    const response = await zernio.comments.sendPrivateReplyToComment({
       path: {
         postId: String(context.variables!.post_id),
         commentId: String(context.variables!.comment_id),
       },
-      body: { accountId: lateAccountId, message: text },
+      body,
     });
+
+    const platformMessageId = (response as any)?.data?.messageId || null;
 
     await supabase.from("messages").insert({
       conversation_id: context.conversationId,
@@ -406,6 +431,7 @@ async function sendFirstMessageAsPrivateReply(
       text,
       sent_by_flow_id: context.flowId,
       status: "sent",
+      platform_message_id: platformMessageId,
     });
 
     await supabase.from("analytics_events").insert({
@@ -414,22 +440,16 @@ async function sendFirstMessageAsPrivateReply(
       contact_id: context.contactId,
       event_type: "message_sent",
     });
+
+    if (data.messages.length > 1) {
+      console.warn(
+        "Comment flow Send Message node had multiple messages; only the first was sent (one private reply per comment)."
+      );
+    }
+    return true;
   } catch (error) {
     console.error("Failed to send comment-context message as private reply:", error);
-    await supabase.from("messages").insert({
-      conversation_id: context.conversationId,
-      direction: "outbound",
-      text,
-      sent_by_flow_id: context.flowId,
-      status: "failed",
-    });
-    return;
-  }
-
-  if (data.messages.length > 1) {
-    console.warn(
-      "Comment flow Send Message node had multiple messages; only the first was sent (one private reply per comment)."
-    );
+    return false;
   }
 }
 
@@ -473,6 +493,24 @@ async function executeSendMessage(
     }
   }
 
+  // If this flow was triggered by a comment on Instagram or Facebook, deliver via
+  // the private-reply endpoint. Instagram/Facebook allows exactly one private reply
+  // per comment (within 7 days), which reaches the commenter even if their standard
+  // 24-hour DM window is closed.
+  const hasCommentContext = Boolean(
+    context.variables?.comment_id &&
+    context.variables?.post_id &&
+    lateAccountId &&
+    zernio &&
+    (!context.platform || context.platform === "instagram" || context.platform === "facebook")
+  );
+
+  if (hasCommentContext) {
+    const sent = await sendFirstMessageAsPrivateReply(supabase, zernio!, data, context, lateAccountId);
+    if (sent) return;
+    console.warn("Private reply to comment failed; attempting fallback to inbox message if conversation exists");
+  }
+
   // Resolve late_conversation_id from conversation if not in context
   let lateConversationId = context.lateConversationId;
   if (!lateConversationId) {
@@ -483,13 +521,22 @@ async function executeSendMessage(
       .single();
 
     if (!conversation?.late_conversation_id) {
-      // Comment-triggered flows have no DM conversation yet. Instagram allows
-      // exactly one private reply per comment, so deliver the first message via
-      // the private-reply endpoint instead of silently dropping the whole node
-      // (users build comment flows with plain Send Message nodes, not Private Reply).
-      if (context.variables?.comment_id && context.variables?.post_id && lateAccountId && zernio) {
-        await sendFirstMessageAsPrivateReply(supabase, zernio, data, context, lateAccountId);
-        return;
+      if (hasCommentContext) {
+        // Private reply failed and there is no late_conversation_id for fallback
+        await supabase.from("messages").insert({
+          conversation_id: context.conversationId,
+          direction: "outbound",
+          text: interpolateVariables(data.messages[0]?.text || "", context.variables || {}),
+          sent_by_flow_id: context.flowId,
+          status: "failed",
+        });
+        await supabase.from("analytics_events").insert({
+          workspace_id: context.workspaceId,
+          flow_id: context.flowId,
+          contact_id: context.contactId,
+          event_type: "message_failed",
+          metadata: { error: "Failed to send private reply to comment and no existing conversation ID" },
+        });
       }
       console.error("No late_conversation_id found for conversation:", context.conversationId);
       return;
@@ -526,10 +573,20 @@ async function executeSendMessage(
       }
 
       if (adapted.buttons?.length) {
-        body.buttons = adapted.buttons;
+        body.buttons = adapted.buttons.map((b) => ({
+          ...b,
+          title: b.title.slice(0, 20),
+          payload:
+            b.type === "postback"
+              ? b.payload?.trim() || b.title.trim() || "button_click"
+              : b.payload,
+        }));
       }
       if (adapted.quickReplies?.length) {
-        body.quickReplies = adapted.quickReplies;
+        body.quickReplies = adapted.quickReplies.map((q) => ({
+          title: q.title.slice(0, 20),
+          payload: q.payload?.trim() || q.title.trim() || "quick_reply",
+        }));
       }
       if (adapted.template) {
         body.template = adapted.template;
@@ -998,10 +1055,12 @@ async function executePrivateReply(
   const text = interpolateVariables(data.text, context.variables || {});
 
   try {
-    await zernio.comments.sendPrivateReplyToComment({
+    const response = await zernio.comments.sendPrivateReplyToComment({
       path: { postId, commentId },
       body: { accountId: lateAccountId, message: text },
     });
+
+    const platformMessageId = (response as any)?.data?.messageId || null;
 
     await supabase.from("messages").insert({
       conversation_id: context.conversationId,
@@ -1011,7 +1070,15 @@ async function executePrivateReply(
         ? [{ type: "image", url: data.imageUrl }]
         : null,
       sent_by_flow_id: context.flowId,
+      platform_message_id: platformMessageId,
       status: "sent",
+    });
+
+    await supabase.from("analytics_events").insert({
+      workspace_id: context.workspaceId,
+      flow_id: context.flowId,
+      contact_id: context.contactId,
+      event_type: "message_sent",
     });
   } catch (error) {
     console.error("Failed to send private reply:", error);
@@ -1021,6 +1088,14 @@ async function executePrivateReply(
       text,
       sent_by_flow_id: context.flowId,
       status: "failed",
+    });
+
+    await supabase.from("analytics_events").insert({
+      workspace_id: context.workspaceId,
+      flow_id: context.flowId,
+      contact_id: context.contactId,
+      event_type: "message_failed",
+      metadata: { error: error instanceof Error ? error.message : "Unknown error" },
     });
   }
 }
