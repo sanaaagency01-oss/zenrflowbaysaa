@@ -43,10 +43,12 @@ function formatDate(dateStr: string | null): string {
 
 export function ContactsView({
   contacts,
+  totalCount,
   tags,
   workspaceId,
 }: {
   contacts: ContactWithTags[];
+  totalCount?: number;
   tags: Tag[];
   workspaceId: string;
 }) {
@@ -56,6 +58,8 @@ export function ContactsView({
   const [segmentFilter, setSegmentFilter] = useState<SegmentFilter>(
     createEmptyFilter()
   );
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
 
   const filtered = contacts.filter((contact) => {
     // Search filter
@@ -75,6 +79,22 @@ export function ContactsView({
     return true;
   });
 
+  const displayTotal = totalCount ?? contacts.length;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const startIndex = (currentPage - 1) * pageSize;
+  const paginatedContacts = filtered.slice(startIndex, startIndex + pageSize);
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    setPage(1);
+  };
+
+  const handleTagSelect = (tagId: string | null) => {
+    setSelectedTagId(tagId);
+    setPage(1);
+  };
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
@@ -83,7 +103,8 @@ export function ContactsView({
           <div>
             <h1 className="text-2xl font-bold">Contacts</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              {contacts.length} contact{contacts.length !== 1 ? "s" : ""} in your workspace
+              {displayTotal} contact{displayTotal !== 1 ? "s" : ""} in your workspace
+              {filtered.length !== displayTotal && ` (${filtered.length} matching)`}
             </p>
           </div>
         </div>
@@ -96,7 +117,7 @@ export function ContactsView({
               type="text"
               placeholder="Search by name or email..."
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="w-full rounded-lg border border-input bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
@@ -135,7 +156,7 @@ export function ContactsView({
         {tags.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             <button
-              onClick={() => setSelectedTagId(null)}
+              onClick={() => handleTagSelect(null)}
               className={cn(
                 "rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
                 selectedTagId === null
@@ -149,7 +170,7 @@ export function ContactsView({
               <button
                 key={tag.id}
                 onClick={() =>
-                  setSelectedTagId(tag.id === selectedTagId ? null : tag.id)
+                  handleTagSelect(tag.id === selectedTagId ? null : tag.id)
                 }
                 className={cn(
                   "rounded-full px-2.5 py-1 text-xs font-medium transition-colors",
@@ -207,7 +228,7 @@ export function ContactsView({
               </tr>
             </thead>
             <tbody>
-              {filtered.map((contact) => {
+              {paginatedContacts.map((contact) => {
                 const contactTags = contact.contact_tags
                   .map((ct) => ct.tags)
                   .filter(Boolean) as Tag[];
@@ -307,6 +328,33 @@ export function ContactsView({
               })}
             </tbody>
           </table>
+        )}
+
+        {filtered.length > pageSize && (
+          <div className="flex items-center justify-between border-t border-border px-8 py-4">
+            <p className="text-xs text-muted-foreground">
+              Showing {startIndex + 1}–{Math.min(startIndex + pageSize, filtered.length)} of {filtered.length}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="rounded-lg border border-input px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+              >
+                Previous
+              </button>
+              <span className="text-xs text-muted-foreground">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages}
+                className="rounded-lg border border-input px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>
